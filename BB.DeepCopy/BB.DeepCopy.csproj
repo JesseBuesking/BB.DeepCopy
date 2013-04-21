@@ -53,7 +53,7 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="CecilExtensions.cs" />
-    <Compile Include="BBFCopyMethodAttribute.cs" />
+    <Compile Include="DeepCopyMethodAttribute.cs" />
     <Compile Include="ModuleWeaver.cs" />
     <Compile Include="Objects\Basic.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
