@@ -18,20 +18,21 @@ This can become a bit of a mess very quickly.
 
 Most programmers are probably like me and chose to stick with the binary serialization extension method supplied by the answer in the SO question from above. It's by far the simplest solution, and in most cases the performance hit you take by using it is insignificant.
 
-If you're like me, then you're in a great position! All you have to do is include BB.DeepCopy in the project that contains your deep copy extension, and add a `[DeepCopyMethod]` attribute to your current deep copying extension method. Done.
+If you're like me, then you're in a great position! All you have to do is include [BB.DeepCopy](https://github.com/JesseBuesking/BB.DeepCopy/) in the project that contains your deep copy extension, and add a `[DeepCopyMethod]` attribute to your current deep copying extension method. Done.
 
-For everyone else, add the extension method and apply the `[DeepCopyMethod]` to it. You don't even need the binary serialization logic in the method, it could simply return null (although it's nice to have the binary serialization logic to fall back to in cases where BB.DeepCopy can't add a deep copying method).
+For everyone else, add the extension method and apply the `[DeepCopyMethod]` to it. You don't even need the binary serialization logic in the method, it could simply return null (although it's nice to have the binary serialization logic to fall back to in cases where [BB.DeepCopy](https://github.com/JesseBuesking/BB.DeepCopy/) can't add a deep copying method).
 
 ## What this does
 
-BB.DeepCopy will add a deep copy method to each of your objects (abstract base classes and interfaces included). It will then replace all calls you had in your code to the deep copy extension method with calls to the new deep copy method that's been added to the object.
+[BB.DeepCopy](https://github.com/JesseBuesking/BB.DeepCopy/) will add a deep copy method to each of your objects (abstract base classes and interfaces included). It will then replace all calls you had in your code to the deep copy extension method with calls to the new deep copy method that's been added to the object.
 
 ## Performance remarks
 
-For fields on objects, this performs just as well as a hand-copy.
-For auto-implemented properties (e.g. `public int MyProperty { get; set; }`, this will outperform a hand copy.
-For properties where you have access to the backing field, this will perform just as well as a hand-copy.
-(Check out the performance tests in the test project).
+* For fields on objects, this performs just as well as a hand-copy.
+* For auto-implemented properties (e.g. `public int MyProperty { get; set; }`, this will outperform a hand copy.
+* For properties where you have access to the backing field, this will perform just as well as a hand-copy.
+
+(Check out the [performance tests in the test project](https://github.com/JesseBuesking/BB.DeepCopy/blob/master/Tests/Performance/PerformanceTests.cs)).
 
 ## Bugs/Issues
 
