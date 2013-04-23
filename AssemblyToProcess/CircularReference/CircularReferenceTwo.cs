@@ -1,5 +1,4 @@
 ﻿using System.Collections.Generic;
-using System.Runtime.CompilerServices;
 
 namespace AssemblyToProcess.CircularReference
 {
@@ -11,14 +10,14 @@ namespace AssemblyToProcess.CircularReference
 
         public CircularReferenceTwo HCopy()
         {
-            var track = new Dictionary<int, object>();
-            return this.HCircCopy(this, track);
+            var track = new Dictionary<object, object>(ObjectReferenceComparer.Instance);
+            return this.HCircCopy(track);
         }
 
-        public CircularReferenceTwo HCircCopy(object obj, Dictionary<int, object> track)
+        public CircularReferenceTwo HCircCopy(Dictionary<object, object> track)
         {
             object clone;
-            if (track.TryGetValue(RuntimeHelpers.GetHashCode(obj), out clone))
+            if (track.TryGetValue(this, out clone))
             {
                 var c = clone as CircularReferenceTwo;
                 if (null != c)
@@ -26,11 +25,11 @@ namespace AssemblyToProcess.CircularReference
             }
 
             var myClone = new CircularReferenceTwo();
-            track.Add(RuntimeHelpers.GetHashCode(obj), myClone);
+            track.Add(this, myClone);
 
             myClone.Identifier = this.Identifier;
             CircularReferenceOne cr = this.CR1;
-            myClone.CR1 = null == cr ? null : cr.HCircCopy(cr, track);
+            myClone.CR1 = null == cr ? null : cr.HCircCopy(track);
 
             return myClone;
         }

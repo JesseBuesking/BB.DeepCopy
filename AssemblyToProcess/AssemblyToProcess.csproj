@@ -52,6 +52,7 @@
     <Compile Include="Enumerables\HasList.cs" />
     <Compile Include="Inherits\TypicalInheritance.cs" />
     <Compile Include="Interfaces\ITestInterface.cs" />
+    <Compile Include="ObjectReferenceComparer.cs" />
     <Compile Include="Performance\PerformanceObjects.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>

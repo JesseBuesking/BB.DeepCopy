@@ -53,6 +53,7 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="CecilExtensions.cs" />
+    <Compile Include="CurrentData.cs" />
     <Compile Include="DeepCopyMethodAttribute.cs" />
     <Compile Include="ModuleWeaver.cs" />
     <Compile Include="Objects\Basic.cs" />

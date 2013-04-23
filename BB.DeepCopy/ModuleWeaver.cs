@@ -380,25 +380,28 @@ namespace BB.DeepCopy
                     var processor = deepCopyDef.Body.GetILProcessor();
 
                     // Add and get a reference to the variable that'll hold our final result.
-                    var retVar = processor.Body.Variables.AddV(type);//deepCopyReference.ReturnType);
+                    var retVar = processor.Body.Variables.AddV(type);
 
-                    Collection<VariableDefinition> variables = processor.Body.Variables;
+                    CurrentData currentData = new CurrentData
+                        {
+                            ExceptionHandlers = processor.Body.ExceptionHandlers,
+                            Instructions = processor.Body.Instructions,
+                            Variables = processor.Body.Variables
+                        };
 
-                    Collection<ExceptionHandler> exceptionHandlers = processor.Body.ExceptionHandlers;
-
-                    Collection<Instruction> instructions = processor.Body.Instructions;
+                    currentData.NewObjects.Push(retVar);
 
                     // Create a new instance of 'type' and store in the variable.
-                    instructions.AddI(OpCodes.Newobj, typeEmptyConstructorReference);
-                    instructions.AddI(OpCodes.Stloc, retVar);
+                    currentData.Instructions.AddI(OpCodes.Newobj, typeEmptyConstructorReference);
+                    currentData.Instructions.AddI(OpCodes.Stloc, currentData.NewObjects.Peek());
 
                     // Copy stuff!
-                    this.CopyFields(variables, exceptionHandlers, instructions, type);
-                    this.CopyProperties(variables, exceptionHandlers, instructions, type);
+                    this.CopyFields(currentData, type);
+                    this.CopyProperties(currentData, type);
 
                     // Get the variable with the new instance of 'type' and return it.
-                    instructions.AddI(OpCodes.Ldloc_0);
-                    instructions.AddI(OpCodes.Ret);
+                    currentData.Instructions.AddI(OpCodes.Ldloc, currentData.NewObjects.Pop());
+                    currentData.Instructions.AddI(OpCodes.Ret);
 
                     // Need this to make PeVerify happy.
                     processor.Body.InitLocals = true;
@@ -537,31 +540,19 @@ namespace BB.DeepCopy
             return defaultConstructor;
         }
 
-        private void CopyFields(
-            Collection<VariableDefinition> variables,
-            Collection<ExceptionHandler> exceptionHandlers,
-            Collection<Instruction> instructions,
-            TypeDefinition type)
+        private void CopyFields(CurrentData currentData, TypeDefinition type)
         {
             foreach (var field in type.AccessibleFields())
-                this.HandleField(variables, exceptionHandlers, instructions, field);
+                this.HandleField(currentData, field);
         }
 
-        private void CopyProperties(
-            Collection<VariableDefinition> variables,
-            Collection<ExceptionHandler> exceptionHandlers,
-            Collection<Instruction> instructions,
-            TypeDefinition type)
+        private void CopyProperties(CurrentData currentData, TypeDefinition type)
         {
             foreach (var property in type.AccessiblePropertiesOmittingAccessibleFields())
-                this.HandleProperty(variables, exceptionHandlers, instructions, property);
+                this.HandleProperty(currentData, property);
         }
 
-        private void HandleField(
-            Collection<VariableDefinition> variables,
-            Collection<ExceptionHandler> exceptionHandlers,
-            Collection<Instruction> instructions,
-            FieldDefinition field)
+        private void HandleField(CurrentData currentData, FieldDefinition field)
         {
             Action<Collection<Instruction>> load = collection => collection.AddI(OpCodes.Ldfld, field);
             Action<Collection<Instruction>> store = collection => collection.AddI(OpCodes.Stfld, field);
@@ -571,21 +562,21 @@ namespace BB.DeepCopy
 
             if (typeReference.IsPrimitiveObject())
             {
-                this.CopyPrimitive(variables, exceptionHandlers, instructions, load, store);
+                this.CopyPrimitive(currentData, load, store);
             }
             else if (typeReference.IsArray)
             {
-                this.HandleArray(variables, exceptionHandlers, instructions, typeReference, load, store);
+                this.HandleArray(currentData, typeReference, load, store);
             }
             else if (typeReference.IsGenericInstance)
             {
                 if (typeReference.Name.Equals("List`1"))
                 {
-                    this.HandleList(variables, exceptionHandlers, instructions, typeReference, load, store);
+                    this.HandleList(currentData, typeReference, load, store);
                 }
                 else if (typeReference.Name.Equals("Dictionary`2"))
                 {
-                    this.HandleDictionary(variables, exceptionHandlers, instructions, typeReference, load, store);
+                    this.HandleDictionary(currentData, typeReference, load, store);
                 }
             }
             else if (typeReference.IsGenericParameter)
@@ -597,110 +588,105 @@ namespace BB.DeepCopy
                 if (null == typeDefinition)
                     throw new Exception(String.Format("No TypeDefinition for {0}.", field.FullName));
 
-                this.SafeCallDeepCopy(variables, exceptionHandlers, instructions, typeDefinition, load, store);
+                this.SafeCallDeepCopy(currentData, typeDefinition, load, store);
             }
         }
 
-        private void HandleArray(
-            Collection<VariableDefinition> variables,
-            Collection<ExceptionHandler> exceptionHandlers,
-            Collection<Instruction> instructions,
-            TypeReference arrayRef,
-            Action<Collection<Instruction>> load,
-            Action<Collection<Instruction>> store)
+        private void HandleArray(CurrentData currentData, TypeReference arrayRef,
+            Action<Collection<Instruction>> load, Action<Collection<Instruction>> store)
         {
             ArrayType arrayType = (ArrayType) arrayRef;
             TypeReference elementType = arrayType.ElementType;
 
             if (elementType.IsPrimitiveObject())
             {
-                var newArray = variables.AddV(arrayRef);
-                var currentIndex = variables.AddV(this.ModuleDefinition.TypeSystem.Int32); // TODO replace
-                var length = variables.AddV(this.ModuleDefinition.TypeSystem.Int32); // TODO replace
+                var newArray = currentData.Variables.AddV(arrayRef);
+                var currentIndex = currentData.Variables.AddV(this.ModuleDefinition.TypeSystem.Int32); // TODO replace
+                var length = currentData.Variables.AddV(this.ModuleDefinition.TypeSystem.Int32); // TODO replace
 
-                var loadMainObj = Instruction.Create(OpCodes.Ldloc_0);
-                instructions.AddI(OpCodes.Ldnull);
-                instructions.AddI(OpCodes.Stloc, newArray);
-                instructions.AddI(OpCodes.Ldnull);
-                instructions.AddI(OpCodes.Ldarg_0);
-                load(instructions);
-                instructions.AddI(OpCodes.Ceq);
-                instructions.AddI(OpCodes.Brtrue_S, loadMainObj);
+                var loadMainObj = Instruction.Create(OpCodes.Ldloc, currentData.NewObjects.Peek());
+                currentData.Instructions.AddI(OpCodes.Ldnull);
+                currentData.Instructions.AddI(OpCodes.Stloc, newArray);
+                currentData.Instructions.AddI(OpCodes.Ldnull);
+                currentData.Instructions.AddI(OpCodes.Ldarg_0);
+                load(currentData.Instructions);
+                currentData.Instructions.AddI(OpCodes.Ceq);
+                currentData.Instructions.AddI(OpCodes.Brtrue_S, loadMainObj);
 
                 var IL_0059 = Instruction.Create(OpCodes.Ldloc, currentIndex);
-                instructions.AddI(OpCodes.Ldarg_0);
-                load(instructions);
-                instructions.AddI(OpCodes.Ldlen);
-                instructions.AddI(OpCodes.Conv_I4); // TODO replace
-                instructions.AddI(OpCodes.Stloc, length);
-                instructions.AddI(OpCodes.Ldloc, length);
-                instructions.AddI(OpCodes.Newarr, elementType);
-                instructions.AddI(OpCodes.Stloc, newArray);
-                instructions.AddI(OpCodes.Ldc_I4_0); // TODO replace
-                instructions.AddI(OpCodes.Stloc, currentIndex);
-                instructions.AddI(OpCodes.Br_S, IL_0059);
+                currentData.Instructions.AddI(OpCodes.Ldarg_0);
+                load(currentData.Instructions);
+                currentData.Instructions.AddI(OpCodes.Ldlen);
+                currentData.Instructions.AddI(OpCodes.Conv_I4); // TODO replace
+                currentData.Instructions.AddI(OpCodes.Stloc, length);
+                currentData.Instructions.AddI(OpCodes.Ldloc, length);
+                currentData.Instructions.AddI(OpCodes.Newarr, elementType);
+                currentData.Instructions.AddI(OpCodes.Stloc, newArray);
+                currentData.Instructions.AddI(OpCodes.Ldc_I4_0); // TODO replace
+                currentData.Instructions.AddI(OpCodes.Stloc, currentIndex);
+                currentData.Instructions.AddI(OpCodes.Br_S, IL_0059);
 
                 // loop start
                 var IL_0025 = Instruction.Create(OpCodes.Ldloc, newArray);
-                instructions.Add(IL_0025);
-                instructions.AddI(OpCodes.Ldloc, currentIndex);
-                instructions.AddI(OpCodes.Ldarg_0);
-                load(instructions);
-                instructions.AddI(OpCodes.Ldloc, currentIndex);
+                currentData.Instructions.Add(IL_0025);
+                currentData.Instructions.AddI(OpCodes.Ldloc, currentIndex);
+                currentData.Instructions.AddI(OpCodes.Ldarg_0);
+                load(currentData.Instructions);
+                currentData.Instructions.AddI(OpCodes.Ldloc, currentIndex);
 
                 // Change for each primitive.
                 Type type = Type.GetType(elementType.FullName);
                 if (typeof (System.Int16) == type)
                 {
-                    instructions.AddI(OpCodes.Ldelem_I2);
-                    instructions.AddI(OpCodes.Stelem_I2);
+                    currentData.Instructions.AddI(OpCodes.Ldelem_I2);
+                    currentData.Instructions.AddI(OpCodes.Stelem_I2);
                 }
                 else if (typeof (System.Int32) == type)
                 {
-                    instructions.AddI(OpCodes.Ldelem_I4);
-                    instructions.AddI(OpCodes.Stelem_I4);
+                    currentData.Instructions.AddI(OpCodes.Ldelem_I4);
+                    currentData.Instructions.AddI(OpCodes.Stelem_I4);
                 }
                 else if (typeof (System.Int64) == type)
                 {
-                    instructions.AddI(OpCodes.Ldelem_I8);
-                    instructions.AddI(OpCodes.Stelem_I8);
+                    currentData.Instructions.AddI(OpCodes.Ldelem_I8);
+                    currentData.Instructions.AddI(OpCodes.Stelem_I8);
                 }
                 else if (typeof (float) == type)
                 {
-                    instructions.AddI(OpCodes.Ldelem_R4);
-                    instructions.AddI(OpCodes.Stelem_R4);
+                    currentData.Instructions.AddI(OpCodes.Ldelem_R4);
+                    currentData.Instructions.AddI(OpCodes.Stelem_R4);
                 }
                 else if (typeof (double) == type)
                 {
-                    instructions.AddI(OpCodes.Ldelem_R8);
-                    instructions.AddI(OpCodes.Stelem_R8);
+                    currentData.Instructions.AddI(OpCodes.Ldelem_R8);
+                    currentData.Instructions.AddI(OpCodes.Stelem_R8);
                 }
                 else if (typeof (System.UInt16) == type)
                 {
-                    instructions.AddI(OpCodes.Ldelem_U2);
-                    instructions.AddI(OpCodes.Stelem_I4);
+                    currentData.Instructions.AddI(OpCodes.Ldelem_U2);
+                    currentData.Instructions.AddI(OpCodes.Stelem_I4);
                 }
                 else if (typeof (System.UInt32) == type)
                 {
-                    instructions.AddI(OpCodes.Ldelem_U4);
-                    instructions.AddI(OpCodes.Stelem_I4);
+                    currentData.Instructions.AddI(OpCodes.Ldelem_U4);
+                    currentData.Instructions.AddI(OpCodes.Stelem_I4);
                 }
 
-                instructions.AddI(OpCodes.Ldloc, currentIndex);
-                instructions.AddI(OpCodes.Ldc_I4_1); // TODO replace
-                instructions.AddI(OpCodes.Add);
-                instructions.AddI(OpCodes.Stloc, currentIndex);
+                currentData.Instructions.AddI(OpCodes.Ldloc, currentIndex);
+                currentData.Instructions.AddI(OpCodes.Ldc_I4_1); // TODO replace
+                currentData.Instructions.AddI(OpCodes.Add);
+                currentData.Instructions.AddI(OpCodes.Stloc, currentIndex);
 
                 // Increment the index.
-                instructions.Add(IL_0059);
-                instructions.AddI(OpCodes.Ldloc, length);
-                instructions.AddI(OpCodes.Clt);
-                instructions.AddI(OpCodes.Brtrue_S, IL_0025);
+                currentData.Instructions.Add(IL_0059);
+                currentData.Instructions.AddI(OpCodes.Ldloc, length);
+                currentData.Instructions.AddI(OpCodes.Clt);
+                currentData.Instructions.AddI(OpCodes.Brtrue_S, IL_0025);
                 // end loop
 
-                instructions.Add(loadMainObj);
-                instructions.AddI(OpCodes.Ldloc, newArray);
-                store(instructions);
+                currentData.Instructions.Add(loadMainObj);
+                currentData.Instructions.AddI(OpCodes.Ldloc, newArray);
+                store(currentData.Instructions);
             }
             else if (elementType.IsGenericParameter)
             {
@@ -715,86 +701,82 @@ namespace BB.DeepCopy
                     throw new Exception(String.Format("Sub-type {0} does not implement DeepCopy.",
                         typeDefinition.FullName));
 
-                var newArray = variables.AddV(arrayRef);
-                var currentIndex = variables.AddV(this.ModuleDefinition.TypeSystem.Int32); // TODO replace
-                var length = variables.AddV(this.ModuleDefinition.TypeSystem.Int32); // TODO replace
+                var newArray = currentData.Variables.AddV(arrayRef);
+                var currentIndex = currentData.Variables.AddV(this.ModuleDefinition.TypeSystem.Int32); // TODO replace
+                var length = currentData.Variables.AddV(this.ModuleDefinition.TypeSystem.Int32); // TODO replace
 
-                var loadMainObj = Instruction.Create(OpCodes.Ldloc_0);
-                instructions.AddI(OpCodes.Ldnull);
-                instructions.AddI(OpCodes.Stloc, newArray);
-                instructions.AddI(OpCodes.Ldnull);
-                instructions.AddI(OpCodes.Ldarg_0);
-                load(instructions);
-                instructions.AddI(OpCodes.Ceq);
-                instructions.AddI(OpCodes.Brtrue_S, loadMainObj);
+                var loadMainObj = Instruction.Create(OpCodes.Ldloc, currentData.NewObjects.Peek());
+                currentData.Instructions.AddI(OpCodes.Ldnull);
+                currentData.Instructions.AddI(OpCodes.Stloc, newArray);
+                currentData.Instructions.AddI(OpCodes.Ldnull);
+                currentData.Instructions.AddI(OpCodes.Ldarg_0);
+                load(currentData.Instructions);
+                currentData.Instructions.AddI(OpCodes.Ceq);
+                currentData.Instructions.AddI(OpCodes.Brtrue_S, loadMainObj);
 
                 var IL_0059 = Instruction.Create(OpCodes.Ldloc, currentIndex);
-                instructions.AddI(OpCodes.Ldarg_0);
-                load(instructions);
-                instructions.AddI(OpCodes.Ldlen);
-                instructions.AddI(OpCodes.Conv_I4); // TODO replace
-                instructions.AddI(OpCodes.Stloc, length);
-                instructions.AddI(OpCodes.Ldloc, length);
-                instructions.AddI(OpCodes.Newarr, elementType);
-                instructions.AddI(OpCodes.Stloc, newArray);
-                instructions.AddI(OpCodes.Ldc_I4_0); // TODO replace
-                instructions.AddI(OpCodes.Stloc, currentIndex);
-                instructions.AddI(OpCodes.Br_S, IL_0059);
+                currentData.Instructions.AddI(OpCodes.Ldarg_0);
+                load(currentData.Instructions);
+                currentData.Instructions.AddI(OpCodes.Ldlen);
+                currentData.Instructions.AddI(OpCodes.Conv_I4); // TODO replace
+                currentData.Instructions.AddI(OpCodes.Stloc, length);
+                currentData.Instructions.AddI(OpCodes.Ldloc, length);
+                currentData.Instructions.AddI(OpCodes.Newarr, elementType);
+                currentData.Instructions.AddI(OpCodes.Stloc, newArray);
+                currentData.Instructions.AddI(OpCodes.Ldc_I4_0); // TODO replace
+                currentData.Instructions.AddI(OpCodes.Stloc, currentIndex);
+                currentData.Instructions.AddI(OpCodes.Br_S, IL_0059);
 
                 // loop start
                 var IL_0025 = Instruction.Create(OpCodes.Ldnull);
                 var IL_0042 = Instruction.Create(OpCodes.Ldloc, newArray);
-                instructions.Add(IL_0025);
-                instructions.AddI(OpCodes.Ldarg_0);
-                load(instructions);
-                instructions.AddI(OpCodes.Ldloc, currentIndex);
-                instructions.AddI(OpCodes.Ldelem_Ref);
-                instructions.AddI(OpCodes.Ceq);
-                instructions.AddI(OpCodes.Brfalse_S, IL_0042);
+                currentData.Instructions.Add(IL_0025);
+                currentData.Instructions.AddI(OpCodes.Ldarg_0);
+                load(currentData.Instructions);
+                currentData.Instructions.AddI(OpCodes.Ldloc, currentIndex);
+                currentData.Instructions.AddI(OpCodes.Ldelem_Ref);
+                currentData.Instructions.AddI(OpCodes.Ceq);
+                currentData.Instructions.AddI(OpCodes.Brfalse_S, IL_0042);
 
                 var IL_0054 = Instruction.Create(OpCodes.Ldloc, currentIndex);
-                instructions.AddI(OpCodes.Ldloc, newArray);
-                instructions.AddI(OpCodes.Ldloc, currentIndex);
-                instructions.AddI(OpCodes.Ldnull);
-                instructions.AddI(OpCodes.Stelem_Ref);
-                instructions.AddI(OpCodes.Br_S, IL_0054);
+                currentData.Instructions.AddI(OpCodes.Ldloc, newArray);
+                currentData.Instructions.AddI(OpCodes.Ldloc, currentIndex);
+                currentData.Instructions.AddI(OpCodes.Ldnull);
+                currentData.Instructions.AddI(OpCodes.Stelem_Ref);
+                currentData.Instructions.AddI(OpCodes.Br_S, IL_0054);
 
-                instructions.Add(IL_0042);
-                instructions.AddI(OpCodes.Ldloc, currentIndex);
-                instructions.AddI(OpCodes.Ldarg_0);
-                load(instructions);
-                instructions.AddI(OpCodes.Ldloc, currentIndex);
-                instructions.AddI(OpCodes.Ldelem_Ref);
-                instructions.AddI(OpCodes.Callvirt, deepCopy);
-                instructions.AddI(OpCodes.Stelem_Ref);
+                currentData.Instructions.Add(IL_0042);
+                currentData.Instructions.AddI(OpCodes.Ldloc, currentIndex);
+                currentData.Instructions.AddI(OpCodes.Ldarg_0);
+                load(currentData.Instructions);
+                currentData.Instructions.AddI(OpCodes.Ldloc, currentIndex);
+                currentData.Instructions.AddI(OpCodes.Ldelem_Ref);
+                currentData.Instructions.AddI(OpCodes.Callvirt, deepCopy);
+                currentData.Instructions.AddI(OpCodes.Stelem_Ref);
 
                 // Increment the index.
-                instructions.Add(IL_0054);
-                instructions.AddI(OpCodes.Ldc_I4_1); // TODO replace
-                instructions.AddI(OpCodes.Add);
-                instructions.AddI(OpCodes.Stloc, currentIndex);
+                currentData.Instructions.Add(IL_0054);
+                currentData.Instructions.AddI(OpCodes.Ldc_I4_1); // TODO replace
+                currentData.Instructions.AddI(OpCodes.Add);
+                currentData.Instructions.AddI(OpCodes.Stloc, currentIndex);
 
-                instructions.Add(IL_0059);
-                instructions.AddI(OpCodes.Ldloc, length);
-                instructions.AddI(OpCodes.Clt);
-                instructions.AddI(OpCodes.Brtrue_S, IL_0025);
+                currentData.Instructions.Add(IL_0059);
+                currentData.Instructions.AddI(OpCodes.Ldloc, length);
+                currentData.Instructions.AddI(OpCodes.Clt);
+                currentData.Instructions.AddI(OpCodes.Brtrue_S, IL_0025);
                 // end loop
 
-                instructions.Add(loadMainObj);
-                instructions.AddI(OpCodes.Ldloc, newArray);
-                store(instructions);
+                currentData.Instructions.Add(loadMainObj);
+                currentData.Instructions.AddI(OpCodes.Ldloc, newArray);
+                store(currentData.Instructions);
             }
         }
 
-        private void HandleList(
-            Collection<VariableDefinition> variables,
-            Collection<ExceptionHandler> exceptionHandlers,
-            Collection<Instruction> instructions,
-            TypeReference listRef,
-            Action<Collection<Instruction>> load,
-            Action<Collection<Instruction>> store)
+        private void HandleList(CurrentData currentData, TypeReference listRef,
+            Action<Collection<Instruction>> load, Action<Collection<Instruction>> store)
         {
             string fullName = listRef.FullName;
+
 
             var git = (listRef as GenericInstanceType);
             if (null == git || !git.HasGenericArguments || 1 < git.GenericArguments.Count)
@@ -806,27 +788,21 @@ namespace BB.DeepCopy
             var getCount = this.GetTypeMethod(listRef, "get_Count");
             var getItem = this.GetTypeMethod(listRef, "get_Item");
 
-            MethodReference dispose;
-            if (!this.ModuleDefinition.TryGetMethodReference(typeof (IDisposable), "Dispose", out dispose))
-                throw new Exception(String.Format("Unable to get IDisposable.Dispose() for type {0}.", fullName));
-
             // TODO don't restrict to first?
             TypeReference listObjectsType = git.GenericArguments.First();
             if (listObjectsType.IsPrimitiveObject())
             {
-                this.HandleListOfPrimitives(variables, exceptionHandlers, instructions, listRef, load, store,
-                    getCount, getItem, addMethod);
+                this.HandleListOfPrimitives(currentData, listRef, load, store, getCount, getItem, addMethod);
             }
             else
             {
-                this.HandleListOfObjects(variables, exceptionHandlers, instructions, listRef, load, store,
-                    listObjectsType, getCount, getItem, addMethod);
+                this.HandleListOfObjects(currentData, listRef, load, store, listObjectsType, getCount, getItem,
+                    addMethod);
             }
         }
 
-        private void HandleListOfPrimitives(Collection<VariableDefinition> variables,
-            Collection<ExceptionHandler> exceptionHandlers, Collection<Instruction> instructions,
-            TypeReference listRef, Action<Collection<Instruction>> load, Action<Collection<Instruction>> store,
+        private void HandleListOfPrimitives(CurrentData currentData, TypeReference listRef,
+            Action<Collection<Instruction>> load, Action<Collection<Instruction>> store,
             MethodReference getCount, MethodReference getItem, MethodReference addMethod)
         {
             var intType = this.ModuleDefinition.Import(this.ModuleDefinition.TypeSystem.Int32).Resolve();
@@ -835,61 +811,60 @@ namespace BB.DeepCopy
                     new ParameterDefinition(intType)
                 });
 
-            var newList = variables.AddV(listRef);
-            var count = variables.AddV(intType);
-            var currentIndex = variables.AddV(intType);
+            var newList = currentData.Variables.AddV(listRef);
+            var count = currentData.Variables.AddV(intType);
+            var currentIndex = currentData.Variables.AddV(intType);
 
-            var loadNullAndRet = Instruction.Create(OpCodes.Ldloc_0);
-            instructions.AddI(OpCodes.Ldnull);
-            instructions.AddI(OpCodes.Stloc, newList);
-            instructions.AddI(OpCodes.Ldnull);
-            instructions.AddI(OpCodes.Ldarg_0);
-            load(instructions);
-            instructions.AddI(OpCodes.Ceq);
-            instructions.AddI(OpCodes.Brtrue_S, loadNullAndRet);
+            var loadNullAndRet = Instruction.Create(OpCodes.Ldloc, currentData.NewObjects.Peek());
+            currentData.Instructions.AddI(OpCodes.Ldnull);
+            currentData.Instructions.AddI(OpCodes.Stloc, newList);
+            currentData.Instructions.AddI(OpCodes.Ldnull);
+            currentData.Instructions.AddI(OpCodes.Ldarg_0);
+            load(currentData.Instructions);
+            currentData.Instructions.AddI(OpCodes.Ceq);
+            currentData.Instructions.AddI(OpCodes.Brtrue_S, loadNullAndRet);
 
             var forLoopCondition = Instruction.Create(OpCodes.Ldloc, currentIndex);
-            instructions.AddI(OpCodes.Ldarg_0);
-            load(instructions);
-            instructions.AddI(OpCodes.Callvirt, getCount);
-            instructions.AddI(OpCodes.Stloc, count);
-            instructions.AddI(OpCodes.Ldloc, count);
-            instructions.AddI(OpCodes.Newobj, listOfObjConstructor);
-            instructions.AddI(OpCodes.Stloc, newList);
-            instructions.AddI(OpCodes.Ldc_I4_0);
-            instructions.AddI(OpCodes.Stloc, currentIndex);
-            instructions.AddI(OpCodes.Br_S, forLoopCondition);
+            currentData.Instructions.AddI(OpCodes.Ldarg_0);
+            load(currentData.Instructions);
+            currentData.Instructions.AddI(OpCodes.Callvirt, getCount);
+            currentData.Instructions.AddI(OpCodes.Stloc, count);
+            currentData.Instructions.AddI(OpCodes.Ldloc, count);
+            currentData.Instructions.AddI(OpCodes.Newobj, listOfObjConstructor);
+            currentData.Instructions.AddI(OpCodes.Stloc, newList);
+            currentData.Instructions.AddI(OpCodes.Ldc_I4_0);
+            currentData.Instructions.AddI(OpCodes.Stloc, currentIndex);
+            currentData.Instructions.AddI(OpCodes.Br_S, forLoopCondition);
 
             // loop start
             var loopStart = Instruction.Create(OpCodes.Ldloc, newList);
-            instructions.Add(loopStart);
-            instructions.AddI(OpCodes.Ldarg_0);
-            load(instructions);
-            instructions.AddI(OpCodes.Ldloc, currentIndex);
-            instructions.AddI(OpCodes.Callvirt, getItem);
-            instructions.AddI(OpCodes.Callvirt, addMethod);
+            currentData.Instructions.Add(loopStart);
+            currentData.Instructions.AddI(OpCodes.Ldarg_0);
+            load(currentData.Instructions);
+            currentData.Instructions.AddI(OpCodes.Ldloc, currentIndex);
+            currentData.Instructions.AddI(OpCodes.Callvirt, getItem);
+            currentData.Instructions.AddI(OpCodes.Callvirt, addMethod);
 
             // loop increment
-            instructions.AddI(OpCodes.Ldloc, currentIndex);
-            instructions.AddI(OpCodes.Ldc_I4_1);
-            instructions.AddI(OpCodes.Add);
-            instructions.AddI(OpCodes.Stloc, currentIndex);
+            currentData.Instructions.AddI(OpCodes.Ldloc, currentIndex);
+            currentData.Instructions.AddI(OpCodes.Ldc_I4_1);
+            currentData.Instructions.AddI(OpCodes.Add);
+            currentData.Instructions.AddI(OpCodes.Stloc, currentIndex);
 
             // check if condition
-            instructions.Add(forLoopCondition);
-            instructions.AddI(OpCodes.Ldloc, count);
-            instructions.AddI(OpCodes.Clt);
-            instructions.AddI(OpCodes.Brtrue_S, loopStart);
+            currentData.Instructions.Add(forLoopCondition);
+            currentData.Instructions.AddI(OpCodes.Ldloc, count);
+            currentData.Instructions.AddI(OpCodes.Clt);
+            currentData.Instructions.AddI(OpCodes.Brtrue_S, loopStart);
             // end loop
 
-            instructions.Add(loadNullAndRet);
-            instructions.AddI(OpCodes.Ldloc, newList);
-            store(instructions);
+            currentData.Instructions.Add(loadNullAndRet);
+            currentData.Instructions.AddI(OpCodes.Ldloc, newList);
+            store(currentData.Instructions);
         }
 
-        private void HandleListOfObjects(Collection<VariableDefinition> variables,
-            Collection<ExceptionHandler> exceptionHandlers, Collection<Instruction> instructions,
-            TypeReference listRef, Action<Collection<Instruction>> load, Action<Collection<Instruction>> store,
+        private void HandleListOfObjects(CurrentData currentData, TypeReference listRef,
+            Action<Collection<Instruction>> load, Action<Collection<Instruction>> store,
             TypeReference listObjectsType, MethodReference getCount, MethodReference getItem,
             MethodReference addMethod)
         {
@@ -909,78 +884,73 @@ namespace BB.DeepCopy
                     new ParameterDefinition(intType)
                 });
 
-            var newList = variables.AddV(listRef);
-            var listObject = variables.AddV(listObjectsType);
-            var count = variables.AddV(intType);
-            var currentIndex = variables.AddV(intType);
+            var newList = currentData.Variables.AddV(listRef);
+            var listObject = currentData.Variables.AddV(listObjectsType);
+            var count = currentData.Variables.AddV(intType);
+            var currentIndex = currentData.Variables.AddV(intType);
 
-            var loadNullAndRet = Instruction.Create(OpCodes.Ldloc_0);
-            instructions.AddI(OpCodes.Ldnull);
-            instructions.AddI(OpCodes.Stloc, newList);
-            instructions.AddI(OpCodes.Ldnull);
-            instructions.AddI(OpCodes.Ldarg_0);
-            load(instructions);
-            instructions.AddI(OpCodes.Ceq);
-            instructions.AddI(OpCodes.Brtrue_S, loadNullAndRet);
+            var loadNullAndRet = Instruction.Create(OpCodes.Ldloc, currentData.NewObjects.Peek());
+            currentData.Instructions.AddI(OpCodes.Ldnull);
+            currentData.Instructions.AddI(OpCodes.Stloc, newList);
+            currentData.Instructions.AddI(OpCodes.Ldnull);
+            currentData.Instructions.AddI(OpCodes.Ldarg_0);
+            load(currentData.Instructions);
+            currentData.Instructions.AddI(OpCodes.Ceq);
+            currentData.Instructions.AddI(OpCodes.Brtrue_S, loadNullAndRet);
 
             var forLoopCondition = Instruction.Create(OpCodes.Ldloc, currentIndex);
-            instructions.AddI(OpCodes.Ldarg_0);
-            load(instructions);
-            instructions.AddI(OpCodes.Callvirt, getCount);
-            instructions.AddI(OpCodes.Stloc, count);
-            instructions.AddI(OpCodes.Ldloc, count);
-            instructions.AddI(OpCodes.Newobj, listOfObjConstructor);
-            instructions.AddI(OpCodes.Stloc, newList);
-            instructions.AddI(OpCodes.Ldc_I4_0);
-            instructions.AddI(OpCodes.Stloc, currentIndex);
-            instructions.AddI(OpCodes.Br_S, forLoopCondition);
+            currentData.Instructions.AddI(OpCodes.Ldarg_0);
+            load(currentData.Instructions);
+            currentData.Instructions.AddI(OpCodes.Callvirt, getCount);
+            currentData.Instructions.AddI(OpCodes.Stloc, count);
+            currentData.Instructions.AddI(OpCodes.Ldloc, count);
+            currentData.Instructions.AddI(OpCodes.Newobj, listOfObjConstructor);
+            currentData.Instructions.AddI(OpCodes.Stloc, newList);
+            currentData.Instructions.AddI(OpCodes.Ldc_I4_0);
+            currentData.Instructions.AddI(OpCodes.Stloc, currentIndex);
+            currentData.Instructions.AddI(OpCodes.Br_S, forLoopCondition);
 
             // loop start
             var storeNull = Instruction.Create(OpCodes.Ldnull);
             var loopStart = Instruction.Create(OpCodes.Ldarg_0);
-            instructions.Add(loopStart);
-            load(instructions);
-            instructions.AddI(OpCodes.Ldloc, currentIndex);
-            instructions.AddI(OpCodes.Callvirt, getItem);
-            instructions.AddI(OpCodes.Stloc, listObject);
-            instructions.AddI(OpCodes.Ldloc, newList);
-            instructions.AddI(OpCodes.Ldloc, listObject);
-            instructions.AddI(OpCodes.Brfalse_S, storeNull);
+            currentData.Instructions.Add(loopStart);
+            load(currentData.Instructions);
+            currentData.Instructions.AddI(OpCodes.Ldloc, currentIndex);
+            currentData.Instructions.AddI(OpCodes.Callvirt, getItem);
+            currentData.Instructions.AddI(OpCodes.Stloc, listObject);
+            currentData.Instructions.AddI(OpCodes.Ldloc, newList);
+            currentData.Instructions.AddI(OpCodes.Ldloc, listObject);
+            currentData.Instructions.AddI(OpCodes.Brfalse_S, storeNull);
 
             var add = Instruction.Create(OpCodes.Callvirt, addMethod);
-            instructions.AddI(OpCodes.Ldloc, listObject);
-            instructions.AddI(OpCodes.Callvirt, deepCopy);
-            instructions.AddI(OpCodes.Br_S, add);
+            currentData.Instructions.AddI(OpCodes.Ldloc, listObject);
+            currentData.Instructions.AddI(OpCodes.Callvirt, deepCopy);
+            currentData.Instructions.AddI(OpCodes.Br_S, add);
 
-            instructions.Add(storeNull);
+            currentData.Instructions.Add(storeNull);
 
-            instructions.Add(add);
+            currentData.Instructions.Add(add);
 
             // loop increment
-            instructions.AddI(OpCodes.Ldloc, currentIndex);
-            instructions.AddI(OpCodes.Ldc_I4_1);
-            instructions.AddI(OpCodes.Add);
-            instructions.AddI(OpCodes.Stloc, currentIndex);
+            currentData.Instructions.AddI(OpCodes.Ldloc, currentIndex);
+            currentData.Instructions.AddI(OpCodes.Ldc_I4_1);
+            currentData.Instructions.AddI(OpCodes.Add);
+            currentData.Instructions.AddI(OpCodes.Stloc, currentIndex);
 
             // check if condition
-            instructions.Add(forLoopCondition);
-            instructions.AddI(OpCodes.Ldloc, count);
-            instructions.AddI(OpCodes.Clt);
-            instructions.AddI(OpCodes.Brtrue_S, loopStart);
+            currentData.Instructions.Add(forLoopCondition);
+            currentData.Instructions.AddI(OpCodes.Ldloc, count);
+            currentData.Instructions.AddI(OpCodes.Clt);
+            currentData.Instructions.AddI(OpCodes.Brtrue_S, loopStart);
             // end loop
 
-            instructions.Add(loadNullAndRet);
-            instructions.AddI(OpCodes.Ldloc, newList);
-            store(instructions);
+            currentData.Instructions.Add(loadNullAndRet);
+            currentData.Instructions.AddI(OpCodes.Ldloc, newList);
+            store(currentData.Instructions);
         }
 
-        private void HandleDictionary(
-            Collection<VariableDefinition> variables,
-            Collection<ExceptionHandler> exceptionHandlers,
-            Collection<Instruction> instructions,
-            TypeReference dictRef,
-            Action<Collection<Instruction>> load,
-            Action<Collection<Instruction>> store)
+        private void HandleDictionary(CurrentData currentData, TypeReference dictRef,
+            Action<Collection<Instruction>> load, Action<Collection<Instruction>> store)
         {
             string fullName = dictRef.FullName;
 
@@ -1036,89 +1006,89 @@ namespace BB.DeepCopy
             if (null != valueDef)
                 valueDef.TryGetMethod(this._deepCopyMethodName, out valueDeepCopy);
 
-            var newDict = variables.AddV(dictRef);
-            var enumerator = variables.AddV(genericEnumerator);
-            var kvp = variables.AddV(genericKVP);
+            var newDict = currentData.Variables.AddV(dictRef);
+            var enumerator = currentData.Variables.AddV(genericEnumerator);
+            var kvp = currentData.Variables.AddV(genericKVP);
             VariableDefinition kvpValue = null;
             if (null != valueDef)
-                kvpValue = variables.AddV(valueDef);
+                kvpValue = currentData.Variables.AddV(valueDef);
 
-            var IL_006f = Instruction.Create(OpCodes.Ldloc_0);
-            instructions.AddI(OpCodes.Ldnull);
-            instructions.AddI(OpCodes.Stloc, newDict);
-            instructions.AddI(OpCodes.Ldnull);
-            instructions.AddI(OpCodes.Ldarg_0);
-            load(instructions);
-            instructions.AddI(OpCodes.Ceq);
-            instructions.AddI(OpCodes.Brtrue_S, IL_006f);
+            var IL_006f = Instruction.Create(OpCodes.Ldloc, currentData.NewObjects.Peek());
+            currentData.Instructions.AddI(OpCodes.Ldnull);
+            currentData.Instructions.AddI(OpCodes.Stloc, newDict);
+            currentData.Instructions.AddI(OpCodes.Ldnull);
+            currentData.Instructions.AddI(OpCodes.Ldarg_0);
+            load(currentData.Instructions);
+            currentData.Instructions.AddI(OpCodes.Ceq);
+            currentData.Instructions.AddI(OpCodes.Brtrue_S, IL_006f);
 
-            instructions.AddI(OpCodes.Ldarg_0);
-            load(instructions);
-            instructions.AddI(OpCodes.Callvirt, getCount);
+            currentData.Instructions.AddI(OpCodes.Ldarg_0);
+            load(currentData.Instructions);
+            currentData.Instructions.AddI(OpCodes.Callvirt, getCount);
 
-            instructions.AddI(OpCodes.Ldarg_0);
-            load(instructions);
-            instructions.AddI(OpCodes.Callvirt, comparerMethod);
-            instructions.AddI(OpCodes.Newobj, dictOfObjConstructor);
-            instructions.AddI(OpCodes.Stloc, newDict);
-            instructions.AddI(OpCodes.Ldarg_0);
-            load(instructions);
-            instructions.AddI(OpCodes.Callvirt, enumeratorMethod);
-            instructions.AddI(OpCodes.Stloc_S, enumerator);
+            currentData.Instructions.AddI(OpCodes.Ldarg_0);
+            load(currentData.Instructions);
+            currentData.Instructions.AddI(OpCodes.Callvirt, comparerMethod);
+            currentData.Instructions.AddI(OpCodes.Newobj, dictOfObjConstructor);
+            currentData.Instructions.AddI(OpCodes.Stloc, newDict);
+            currentData.Instructions.AddI(OpCodes.Ldarg_0);
+            load(currentData.Instructions);
+            currentData.Instructions.AddI(OpCodes.Callvirt, enumeratorMethod);
+            currentData.Instructions.AddI(OpCodes.Stloc_S, enumerator);
 
             // try
             var IL_004f = Instruction.Create(OpCodes.Ldloca_S, enumerator);
             var tryStart = Instruction.Create(OpCodes.Br_S, IL_004f);
-            instructions.Add(tryStart);
+            currentData.Instructions.Add(tryStart);
 
             // loop start
             var loopStart = Instruction.Create(OpCodes.Ldloca_S, enumerator);
-            instructions.Add(loopStart);
-            instructions.AddI(OpCodes.Call, getCurrent);
-            instructions.AddI(OpCodes.Stloc, kvp);
+            currentData.Instructions.Add(loopStart);
+            currentData.Instructions.AddI(OpCodes.Call, getCurrent);
+            currentData.Instructions.AddI(OpCodes.Stloc, kvp);
 
             if (!genericDict.GenericArguments[1].IsPrimitiveObject())
             {
                 // store the kvp value in a local variable
-                instructions.AddI(OpCodes.Ldloca_S, kvp);
-                instructions.AddI(OpCodes.Call, getValue);
-                instructions.AddI(OpCodes.Stloc, kvpValue);
+                currentData.Instructions.AddI(OpCodes.Ldloca_S, kvp);
+                currentData.Instructions.AddI(OpCodes.Call, getValue);
+                currentData.Instructions.AddI(OpCodes.Stloc, kvpValue);
             }
 
-            instructions.AddI(OpCodes.Ldloc, newDict);
-            instructions.AddI(OpCodes.Ldloca_S, kvp);
-            instructions.AddI(OpCodes.Call, getKey);
+            currentData.Instructions.AddI(OpCodes.Ldloc, newDict);
+            currentData.Instructions.AddI(OpCodes.Ldloca_S, kvp);
+            currentData.Instructions.AddI(OpCodes.Call, getKey);
             if (!genericDict.GenericArguments[0].IsPrimitiveObject())
-                instructions.AddI(OpCodes.Callvirt, keyDeepCopy);
+                currentData.Instructions.AddI(OpCodes.Callvirt, keyDeepCopy);
 
             if (!genericDict.GenericArguments[1].IsPrimitiveObject())
             {
                 var loadNull = Instruction.Create(OpCodes.Ldnull);
-                instructions.AddI(OpCodes.Ldloc, kvpValue);
-                instructions.AddI(OpCodes.Brfalse_S, loadNull);
+                currentData.Instructions.AddI(OpCodes.Ldloc, kvpValue);
+                currentData.Instructions.AddI(OpCodes.Brfalse_S, loadNull);
 
                 var add = Instruction.Create(OpCodes.Callvirt, addMethod);
-                instructions.AddI(OpCodes.Ldloc, kvpValue);
-                instructions.AddI(OpCodes.Callvirt, valueDeepCopy);
-                instructions.AddI(OpCodes.Br_S, add);
+                currentData.Instructions.AddI(OpCodes.Ldloc, kvpValue);
+                currentData.Instructions.AddI(OpCodes.Callvirt, valueDeepCopy);
+                currentData.Instructions.AddI(OpCodes.Br_S, add);
 
-                instructions.Add(loadNull);
+                currentData.Instructions.Add(loadNull);
 
-                instructions.Add(add);
+                currentData.Instructions.Add(add);
             }
             else
             {
-                instructions.AddI(OpCodes.Ldloca_S, kvp);
-                instructions.AddI(OpCodes.Call, getValue);
-                instructions.AddI(OpCodes.Callvirt, addMethod);
+                currentData.Instructions.AddI(OpCodes.Ldloca_S, kvp);
+                currentData.Instructions.AddI(OpCodes.Call, getValue);
+                currentData.Instructions.AddI(OpCodes.Callvirt, addMethod);
             }
 
-            instructions.Add(IL_004f);
-            instructions.AddI(OpCodes.Call, moveNext);
-            instructions.AddI(OpCodes.Brtrue_S, loopStart);
+            currentData.Instructions.Add(IL_004f);
+            currentData.Instructions.AddI(OpCodes.Call, moveNext);
+            currentData.Instructions.AddI(OpCodes.Brtrue_S, loopStart);
             // end loop
 
-            instructions.AddI(OpCodes.Leave_S, IL_006f);
+            currentData.Instructions.AddI(OpCodes.Leave_S, IL_006f);
             // end try
             // finally
 
@@ -1131,17 +1101,17 @@ namespace BB.DeepCopy
                     HandlerStart = finallyStart,
                     HandlerEnd = IL_006f
                 };
-            exceptionHandlers.Add(finallyHandler);
+            currentData.ExceptionHandlers.Add(finallyHandler);
 
-            instructions.Add(finallyStart);
-            instructions.AddI(OpCodes.Constrained, genericEnumerator);
-            instructions.AddI(OpCodes.Callvirt, dispose);
-            instructions.AddI(OpCodes.Endfinally);
+            currentData.Instructions.Add(finallyStart);
+            currentData.Instructions.AddI(OpCodes.Constrained, genericEnumerator);
+            currentData.Instructions.AddI(OpCodes.Callvirt, dispose);
+            currentData.Instructions.AddI(OpCodes.Endfinally);
             // end handler
 
-            instructions.Add(IL_006f);
-            instructions.AddI(OpCodes.Ldloc, newDict);
-            store(instructions);
+            currentData.Instructions.Add(IL_006f);
+            currentData.Instructions.AddI(OpCodes.Ldloc, newDict);
+            store(currentData.Instructions);
         }
 
         private MethodReference GetTypeMethod(TypeReference typeReference, string methodName)
@@ -1259,12 +1229,7 @@ namespace BB.DeepCopy
             return true;
         }
 
-        private void HandleProperty(
-            Collection<VariableDefinition> variables,
-            Collection<ExceptionHandler> exceptionHandlers,
-            Collection<Instruction> instructions,
-            Tuple<MethodDefinition,
-                MethodDefinition> property)
+        private void HandleProperty(CurrentData currentData, Tuple<MethodDefinition, MethodDefinition> property)
         {
             Action<Collection<Instruction>> load = collection => collection.AddI(OpCodes.Call, property.Item1);
             Action<Collection<Instruction>> store = collection => collection.AddI(OpCodes.Callvirt, property.Item2);
@@ -1274,17 +1239,17 @@ namespace BB.DeepCopy
 
             if (typeReference.IsPrimitiveObject())
             {
-                this.CopyPrimitive(variables, exceptionHandlers, instructions, load, store);
+                this.CopyPrimitive(currentData, load, store);
             }
             else if (typeReference.IsArray)
             {
-                this.HandleArray(variables, exceptionHandlers, instructions, typeReference, load, store);
+                this.HandleArray(currentData, typeReference, load, store);
             }
             else if (typeReference.IsGenericInstance)
             {
                 if (typeReference.Name.Equals("List`1"))
                 {
-                    this.HandleList(variables, exceptionHandlers, instructions, typeReference, load, store);
+                    this.HandleList(currentData, typeReference, load, store);
                 }
             }
             else if (typeReference.IsGenericParameter)
@@ -1296,145 +1261,49 @@ namespace BB.DeepCopy
                 if (null == typeDefinition)
                     throw new Exception(String.Format("No TypeDefinition for {0}.", property.Item1));
 
-                this.SafeCallDeepCopy(variables, exceptionHandlers, instructions, typeDefinition, load, store);
+                this.SafeCallDeepCopy(currentData, typeDefinition, load, store);
             }
         }
 
-        private void CopyPrimitive(
-            Collection<VariableDefinition> variables,
-            Collection<ExceptionHandler> exceptionHandlers,
-            Collection<Instruction> instructions,
-            Action<Collection<Instruction>> load,
+        private void CopyPrimitive(CurrentData currentData, Action<Collection<Instruction>> load,
             Action<Collection<Instruction>> store)
         {
-            instructions.AddI(OpCodes.Ldloc_0);
-            instructions.AddI(OpCodes.Ldarg_0);
-            load(instructions);
-            store(instructions);
+            currentData.Instructions.AddI(OpCodes.Ldloc, currentData.NewObjects.Peek());
+            currentData.Instructions.AddI(OpCodes.Ldarg_0);
+            load(currentData.Instructions);
+            store(currentData.Instructions);
         }
 
-        private void SafeCallDeepCopy(
-            Collection<VariableDefinition> variables,
-            Collection<ExceptionHandler> exceptionHandlers,
-            Collection<Instruction> instructions,
-            TypeDefinition typeDefinition,
-            Action<Collection<Instruction>> load,
-            Action<Collection<Instruction>> store)
+        private void SafeCallDeepCopy(CurrentData currentData, TypeDefinition typeDefinition,
+            Action<Collection<Instruction>> load, Action<Collection<Instruction>> store)
         {
             MethodDefinition deepCopy;
             if (!typeDefinition.TryGetMethod(this._deepCopyMethodName, out deepCopy))
                 throw new Exception(
                     String.Format("Sub-type {0} does not implement DeepCopy.", typeDefinition.FullName));
 
-            var var0 = variables.AddV(typeDefinition);
+            var var0 = currentData.Variables.AddV(typeDefinition);
 
             // Load the object, and check to see if it's null.
-            instructions.AddI(OpCodes.Nop);
-            instructions.AddI(OpCodes.Ldarg_0);
-            load(instructions);
-            instructions.AddI(OpCodes.Stloc, var0);
-            instructions.AddI(OpCodes.Ldloc_0);
-            instructions.AddI(OpCodes.Ldloc, var0);
+            currentData.Instructions.AddI(OpCodes.Nop);
+            currentData.Instructions.AddI(OpCodes.Ldarg_0);
+            load(currentData.Instructions);
+            currentData.Instructions.AddI(OpCodes.Stloc, var0);
+            currentData.Instructions.AddI(OpCodes.Ldloc, currentData.NewObjects.Peek());
+            currentData.Instructions.AddI(OpCodes.Ldloc, var0);
 
             var loadNull = Instruction.Create(OpCodes.Ldnull);
-            instructions.AddI(OpCodes.Brfalse_S, loadNull);
+            currentData.Instructions.AddI(OpCodes.Brfalse_S, loadNull);
 
-            instructions.AddI(OpCodes.Ldloc, var0);
-            instructions.AddI(OpCodes.Callvirt, deepCopy);
+            currentData.Instructions.AddI(OpCodes.Ldloc, var0);
+            currentData.Instructions.AddI(OpCodes.Callvirt, deepCopy);
             var noOp = Instruction.Create(OpCodes.Nop);
-            instructions.AddI(OpCodes.Br_S, noOp);
+            currentData.Instructions.AddI(OpCodes.Br_S, noOp);
 
-            instructions.Add(loadNull);
+            currentData.Instructions.Add(loadNull);
 
-            instructions.Add(noOp);
-            store(instructions);
+            currentData.Instructions.Add(noOp);
+            store(currentData.Instructions);
         }
     }
-
-//        private void HandleGeneric(
-//            Collection<VariableDefinition> variables,
-//            Collection<ExceptionHandler> exceptionHandlers,
-//            Collection<Instruction> instructions,
-//            TypeReference genericRef,
-//            Action<Collection<Instruction>> load,
-//            Action<Collection<Instruction>> store)
-//        {
-////            const MethodAttributes abstractMethodAttriubtes =
-////                MethodAttributes.Public |
-////                MethodAttributes.HideBySig |
-////                MethodAttributes.NewSlot |
-////                MethodAttributes.Abstract |
-////                MethodAttributes.Virtual;
-////
-////            MethodDefinition interCopy;
-////            if (!(inter as TypeDefinition).TryGetMethod(deepCopyMethodName, out interCopy))
-////            {
-////                this.LogInfo(String.Format(
-////                    "Interface {0} is missing the {1} method.", type, deepCopyMethodName));
-////                continue;
-////            }
-////
-////            var abstractDeepCopy = new MethodDefinition(
-////                deepCopyMethodName, abstractMethodAttriubtes, interCopy.ReturnType);
-////
-//            var typeDefinition = genericRef as TypeDefinition;
-//            if (null == typeDefinition)
-//                throw new Exception("Generic reference is not a TypeDefinition.");
-//
-//            MethodDefinition deepCopy;
-//            if (!typeDefinition.TryGetMethod(this._deepCopyMethodName, out deepCopy))
-//                throw new Exception(String.Format("Sub-type {0} does not implement DeepCopy.",
-//                    typeDefinition.FullName));
-//
-//            var var0 = variables.AddV(genericRef);
-//            var var1 = variables.AddV(this.ModuleDefinition.TypeSystem.Boolean);
-//            var var2 = variables.AddV(genericRef);
-//            var var5 = variables.AddV(this.ModuleDefinition.TypeSystem.Boolean);
-//
-//            var IL_0028 = Instruction.Create(OpCodes.Ldc_I4_1);
-//            instructions.AddI(OpCodes.Ldloca_S, var0);
-//            instructions.AddI(OpCodes.Initobj, genericRef);
-//            instructions.AddI(OpCodes.Ldnull);
-//            instructions.AddI(OpCodes.Ldloc, var0);
-//            instructions.AddI(OpCodes.Box, genericRef);
-//            instructions.AddI(OpCodes.Ceq);
-//            instructions.AddI(OpCodes.Stloc, var1);
-//            instructions.AddI(OpCodes.Ldloc, var0);
-//            instructions.AddI(OpCodes.Stloc, var2);
-//            instructions.AddI(OpCodes.Ldloc, var1);
-//            instructions.AddI(OpCodes.Brfalse_S, IL_0028);
-//
-//            var IL_0029 = Instruction.Create(OpCodes.Stloc_S, var5);
-//            instructions.AddI(OpCodes.Ldnull);
-//            instructions.AddI(OpCodes.Ldarg_0);
-//            load(instructions);
-//            instructions.AddI(OpCodes.Box, genericRef);
-//            instructions.AddI(OpCodes.Ceq);
-//            instructions.AddI(OpCodes.Br_S, IL_0029);
-//
-//            var IL_004b = Instruction.Create(OpCodes.Ldarg_0);
-//            instructions.Add(IL_0028);
-//            instructions.Add(IL_0029);
-//            instructions.AddI(OpCodes.Ldloc_S, var5);
-//            instructions.AddI(OpCodes.Brtrue_S, IL_004b);
-//
-//            var IL_005d = Instruction.Create(OpCodes.Ldloc_0);
-//            instructions.AddI(OpCodes.Ldarg_0);
-//            load(instructions);
-//            instructions.AddI(OpCodes.Call, deepCopy);
-//            instructions.AddI(OpCodes.Box, genericRef);
-//            instructions.AddI(OpCodes.Unbox_Any, genericRef);
-//            instructions.AddI(OpCodes.Stloc, var2);
-//            instructions.AddI(OpCodes.Br_S, IL_005d);
-//
-//            instructions.Add(IL_004b);
-//            load(instructions);
-//            instructions.AddI(OpCodes.Box, genericRef);
-//            instructions.AddI(OpCodes.Unbox_Any, genericRef);
-//            instructions.AddI(OpCodes.Stloc, var2);
-//
-//            instructions.Add(IL_005d);
-//            instructions.AddI(OpCodes.Ldloc, var2);
-//            store(instructions);
-//        }
 }
