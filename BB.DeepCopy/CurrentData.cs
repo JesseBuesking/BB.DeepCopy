@@ -1,4 +1,5 @@
 ﻿using System.Collections.Generic;
+using Mono.Cecil;
 using Mono.Cecil.Cil;
 using Mono.Collections.Generic;
 
@@ -18,9 +19,12 @@ namespace BB.DeepCopy
 
         public Instruction End;
 
+        public Collection<TypeDefinition> GenericParameters;
+
         public CurrentData()
         {
             this.NewObjects = new Stack<VariableDefinition>();
+            this.GenericParameters = new Collection<TypeDefinition>();
         }
     }
 }
