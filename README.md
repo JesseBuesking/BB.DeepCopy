@@ -1,3 +1,5 @@
+[![Build status](https://ci.appveyor.com/api/projects/status/b7j6wuy7u6htloac)](https://ci.appveyor.com/project/JesseBuesking/bb-deepcopy)
+
 ## This is an add-in for [Fody](https://github.com/Fody/Fody/)
 
 Adds deep copying to objects.
